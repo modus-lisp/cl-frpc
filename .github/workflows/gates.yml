@@ -22,7 +22,7 @@ jobs:
       # build rather than a missing line here.
       - name: Sibling checkouts
         run: |
-          for repo in cl-transport natrium seal; do
+          for repo in cl-transport natrium seal json-simple; do
             git clone --depth 1 -q https://github.com/modus-lisp/$repo.git "$repo"
           done
       - name: Install SBCL
@@ -47,7 +47,7 @@ jobs:
             echo "quicklisp install attempt $attempt failed; retrying"
             sleep 10
           done
-          sbcl --non-interactive --eval '(ql:quickload (list :bordeaux-threads :com.inuoe.jzon :ironclad :usocket))'
+          sbcl --non-interactive --eval '(ql:quickload (list :bordeaux-threads :ironclad :usocket))'
       - name: Tests
         working-directory: cl-frpc
         # ASDF wants an ABSOLUTE registry root; github.workspace is the
