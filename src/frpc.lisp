@@ -11,7 +11,7 @@
 (defpackage #:cl-frpc
   (:use #:cl)
   (:local-nicknames (#:yamux #:yamux) (#:ct #:cl-transport)
-                    (#:ic #:ironclad) (#:jzon #:com.inuoe.jzon)
+                    (#:ic #:ironclad) (#:json #:json-simple)
                     (#:bt #:bordeaux-threads))
   (:export #:run #:expose #:say #:tear-down-tunnel
            #:*client-version* #:*last-pong-tsec* #:*last-heartbeat-tsec*))
@@ -37,7 +37,7 @@
 (defun utf8->string (bytes) (sb-ext:octets-to-string bytes :external-format :utf-8))
 
 (defun %obj (&rest kv)
-  "A plist of string keys -> a jzon object (hash-table).  (%obj) => {}."
+  "A plist of string keys -> a JSON object (hash-table).  (%obj) => {}."
   (let ((h (make-hash-table :test 'equal)))
     (loop for (k v) on kv by #'cddr do (setf (gethash k h) v))
     h))
@@ -59,11 +59,11 @@
                  (when (= r got) (error 'end-of-file :stream s))
                  (setf got r)))
       (values (code-char type-byte)
-              (if (zerop n) (%obj) (jzon:parse (utf8->string buf)))))))
+              (if (zerop n) (%obj) (json:parse (utf8->string buf)))))))
 
 (defun write-msg (s type-char obj)
   "Frame and send one message in ONE write: type(1) + length(8 BE) + JSON body."
-  (let* ((body (utf8 (jzon:stringify obj)))
+  (let* ((body (utf8 (json:stringify obj)))
          (n (length body))
          (out (make-array (+ 9 n) :element-type '(unsigned-byte 8))))
     (setf (aref out 0) (char-code type-char))

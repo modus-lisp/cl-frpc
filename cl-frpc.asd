@@ -12,7 +12,7 @@
   :version "0.1.0"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("cl-transport" "seal" "ironclad" "com.inuoe.jzon" "bordeaux-threads")
+  :depends-on ("cl-transport" "seal" "ironclad" "json-simple" "bordeaux-threads")
   :serial t
   :components
   ((:module "src"
