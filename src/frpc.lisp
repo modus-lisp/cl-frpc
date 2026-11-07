@@ -11,7 +11,7 @@
 (defpackage #:cl-frpc
   (:use #:cl)
   (:local-nicknames (#:yamux #:yamux) (#:ct #:cl-transport)
-                    (#:ic #:ironclad) (#:json #:json-simple)
+                    (#:json #:json-simple)
                     (#:bt #:bordeaux-threads))
   (:export #:run #:expose #:say #:tear-down-tunnel
            #:*client-version* #:*last-pong-tsec* #:*last-heartbeat-tsec*))
@@ -75,7 +75,7 @@
 ;;; ---------- token auth + wire crypto ----------
 
 (defun md5-hex (string)
-  (ic:byte-array-to-hex-string (ic:digest-sequence :md5 (utf8 string))))
+  (format nil "~(~{~2,'0x~}~)" (coerce (natrium:md5 (utf8 string)) 'list)))
 
 (defun unix-now () (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0)))
 
@@ -88,15 +88,16 @@
    64 iters, 16 bytes).  frps overrides golib's \"crypto\" default salt to \"frp\" at
    startup (server/service.go), so \"frp\" is what the running binary actually uses."
   (when token
-    (ic:derive-key (ic:make-kdf 'ic:pbkdf2 :digest 'ic:sha1)
-                   (utf8 token) (utf8 "frp") 64 16)))
+    ;; an AES key: natrium wants it in fixed memory
+    (natrium:pbkdf2-into :sha1 (utf8 token) (utf8 "frp") 64 (gossamer:make-fixed-octets 16))))
 
 ;;; AES-128-CFB stream: the first writer emits a random 16-byte IV; the reader consumes
 ;;; 16 bytes of IV before decrypting.  Cipher state advances per call.
 
 (defun random-iv ()
-  (let ((iv (make-array 16 :element-type '(unsigned-byte 8))))
-    (dotimes (i 16 iv) (setf (aref iv i) (random 256)))))
+  ;; was (random 256): CFB with a predictable IV leaks the XOR of the first blocks of two
+  ;; streams under one key.  Fresh OS entropy, as the IV has to be.
+  (natrium:random-bytes 16))
 
 (defclass aes-cfb-stream (sb-gray:fundamental-binary-input-stream
                           sb-gray:fundamental-binary-output-stream)
@@ -111,8 +112,7 @@
 (defun ensure-enc (s)
   (or (cfb-enc s)
       (let ((iv (random-iv)))
-        (setf (cfb-enc s) (ic:make-cipher :aes :key (cfb-key s) :mode :cfb
-                                               :initialization-vector iv))
+        (setf (cfb-enc s) (natrium:make-aes-cfb-stream (natrium:make-aes-key (cfb-key s)) iv :encrypt))
         (write-sequence iv (cfb-under s)) (force-output (cfb-under s))
         (cfb-enc s))))
 
@@ -120,27 +120,26 @@
   (or (cfb-dec s)
       (let ((iv (make-array 16 :element-type '(unsigned-byte 8))))
         (read-sequence iv (cfb-under s))
-        (setf (cfb-dec s) (ic:make-cipher :aes :key (cfb-key s) :mode :cfb
-                                               :initialization-vector iv)))))
+        (setf (cfb-dec s) (natrium:make-aes-cfb-stream (natrium:make-aes-key (cfb-key s)) iv :decrypt)))))
 
 (defmethod sb-gray:stream-write-byte ((s aes-cfb-stream) byte)
   (let ((c (ensure-enc s)) (b (make-array 1 :element-type '(unsigned-byte 8)
                                             :initial-element byte)))
-    (ic:encrypt-in-place c b) (write-byte (aref b 0) (cfb-under s)))
+    (natrium:aes-stream-xor c b) (write-byte (aref b 0) (cfb-under s)))
   byte)
 
 (defmethod sb-gray:stream-write-sequence ((s aes-cfb-stream) seq &optional (start 0) end)
   (let* ((start (or start 0)) (end (or end (length seq))) (c (ensure-enc s))
          (tmp (make-array (- end start) :element-type '(unsigned-byte 8))))
     (replace tmp seq :start2 start :end2 end)
-    (ic:encrypt-in-place c tmp)
+    (natrium:aes-stream-xor c tmp)
     (write-sequence tmp (cfb-under s)))
   seq)
 
 (defmethod sb-gray:stream-read-byte ((s aes-cfb-stream))
   (let ((c (ensure-dec s)) (b (make-array 1 :element-type '(unsigned-byte 8))))
     (if (zerop (read-sequence b (cfb-under s))) :eof
-        (progn (ic:decrypt-in-place c b) (aref b 0)))))
+        (progn (natrium:aes-stream-xor c b) (aref b 0)))))
 
 (defmethod sb-gray:stream-read-sequence ((s aes-cfb-stream) seq &optional (start 0) end)
   (let* ((start (or start 0)) (end (or end (length seq))) (c (ensure-dec s))
@@ -149,7 +148,7 @@
           do (let ((r (read-sequence tmp (cfb-under s) :start got :end n)))
                (when (= r got) (return)) (setf got r)))
     (when (plusp got)
-      (let ((sub (subseq tmp 0 got))) (ic:decrypt-in-place c sub) (replace seq sub :start1 start)))
+      (let ((sub (subseq tmp 0 got))) (natrium:aes-stream-xor c sub) (replace seq sub :start1 start)))
     (+ start got)))
 
 (defmethod sb-gray:stream-finish-output ((s aes-cfb-stream)) (force-output (cfb-under s)))
